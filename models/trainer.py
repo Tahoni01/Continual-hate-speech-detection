@@ -51,11 +51,11 @@ class ContinualTrainer:
         loss.backward()
         self.optimizer.step()
     
-    if hasattr(self.strategy, "update_buffer"):
-        self.strategy.update_buffer(encodings["input_ids"], labels)
-    
-    preds = torch.argmax(outputs.logits, dim=1)
-    return loss.item(), preds, labels
+        if hasattr(self.strategy, "update_buffer"):
+            self.strategy.update_buffer(encodings["input_ids"], labels)
+        
+        preds = torch.argmax(outputs.logits, dim=1)
+        return loss.item(), preds, labels
 
     # Train on a continual stream (list of batches)
     def train_continual(self, stream, log_every=10):

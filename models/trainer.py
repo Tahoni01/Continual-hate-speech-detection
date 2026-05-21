@@ -4,7 +4,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 
 class ContinualTrainer:
-    def __init__(self, model, tokenizer, device='cuda', batch_size=32, lr=2e-5):
+    def __init__(self, model, tokenizer, device='cuda', batch_size=32, lr=2e-5, strategy=None):
         self.model = model.to(device)
         self.tokenizer = tokenizer
         self.device = device
@@ -13,6 +13,7 @@ class ContinualTrainer:
         self.label_map = {"hatespeech": 0, "offensive": 1, "normal": 2}
         self.num_classes = len(self.label_map)
         self.loss_fn = nn.CrossEntropyLoss()
+        self.strategy = strategy
     
     # Batch tokenization & label preparation
     def prepare_batch(self, batch):
@@ -31,15 +32,30 @@ class ContinualTrainer:
     def train_step(self, batch):
         self.model.train()
         encodings, labels = self.prepare_batch(batch)
+        
         outputs = self.model(input_ids=encodings["input_ids"],
                              attention_mask=encodings["attention_mask"],
                              labels=labels)
+        
         loss = outputs.loss
+        
+        if self.strategy:
+            if hasattr(self.strategy, "compute_loss"):
+                # Replay o distillation
+                loss = self.strategy.compute_loss(self.loss_fn, outputs.logits, labels)
+            elif hasattr(self.strategy, "ewc_loss"):
+                # EWC
+                loss = loss + self.strategy.ewc_loss()
+        
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        preds = torch.argmax(outputs.logits, dim=1)
-        return loss.item(), preds, labels
+    
+    if hasattr(self.strategy, "update_buffer"):
+        self.strategy.update_buffer(encodings["input_ids"], labels)
+    
+    preds = torch.argmax(outputs.logits, dim=1)
+    return loss.item(), preds, labels
 
     # Train on a continual stream (list of batches)
     def train_continual(self, stream, log_every=10):

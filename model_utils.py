@@ -252,3 +252,6 @@ def test_plot_confusion_matrix(metrics, class_names=None, output_dir="results"):
     plt.title('Confusion Matrix')
     plt.savefig(os.path.join(output_dir, 'confusion_matrix.png'), bbox_inches='tight')
     plt.close()
+
+def test():
+    print("is ok")

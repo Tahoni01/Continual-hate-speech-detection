@@ -18,8 +18,8 @@ def plot_loss(losses, smooth_window=3):
     plt.show()
 
 def plot_batch_metrics(preds, labels):
-    batch_accuracies = [compute_accuracy(p, l).item() for p, l in zip(preds, labels)]
-    batch_f1 = [compute_f1(p, l).item() for p, l in zip(preds, labels)]
+    batch_accuracies = [compute_accuracy(p, l) for p, l in zip(preds, labels)]
+    batch_f1 = [compute_f1(p, l) for p, l in zip(preds, labels)]
     
     plt.figure(figsize=(8,4))
     plt.plot(batch_accuracies, marker='o', label="Batch Accuracy")

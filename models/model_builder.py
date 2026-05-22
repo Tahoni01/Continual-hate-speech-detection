@@ -10,6 +10,9 @@ class CustomClassifier(nn.Module):
         # backbone
         self.config = AutoConfig.from_pretrained(model_name, num_labels=num_labels)
         self.backbone = AutoModel.from_pretrained(model_name, config=self.config)
+        # dopo aver caricato il backbone
+        for param in self.backbone.parameters():
+            param.requires_grad = False
 
         # semplice classification head
         hidden_size = self.config.hidden_size

@@ -1,118 +1,63 @@
-# trainer.py
+# model_builder.py
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
-from tqdm import tqdm
+from transformers import AutoModel, AutoConfig
+from transformers.modeling_outputs import SequenceClassifierOutput
 
-class ContinualTrainer:
-    def __init__(self, model, tokenizer, device='cuda', batch_size=32, lr=2e-5, strategy=None, label_map=None):
+class CustomClassifier(nn.Module):
+    def __init__(self, model_name: str, num_labels: int, freeze_backbone=True):
         """
-        Continual Trainer per classificazione testuale con strategie di replay/CL.
+        Modello di classificazione testuale con backbone transformers (DistilRoBERTa)
+        e semplice linear head per continual learning.
+        
+        Args:
+            model_name (str): nome del modello pretrained
+            num_labels (int): numero di classi
+            freeze_backbone (bool): se True blocca i pesi del backbone
         """
-        self.device = device
-        self.model = model.to(self.device)
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.optimizer = AdamW(self.model.parameters(), lr=lr)
-        self.strategy = strategy
+        super().__init__()
 
-        # Label map parametrica
-        self.label_map = label_map or {"hatespeech": 0, "offensive": 1, "normal": 2}
-        self.num_classes = len(self.label_map)
-        self.loss_fn = nn.CrossEntropyLoss()
+        # ---------------------------
+        # Backbone
+        # ---------------------------
+        self.config = AutoConfig.from_pretrained(model_name, num_labels=num_labels)
+        self.backbone = AutoModel.from_pretrained(model_name, config=self.config)
 
-    # ---------------------------
-    # Preparazione batch
-    # ---------------------------
-    def prepare_batch(self, batch):
-        encodings = self.tokenizer(
-            batch["text"].tolist(),
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(self.device)
+        # Freeze backbone se richiesto
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
 
-        labels = torch.tensor([self.label_map[x] for x in batch["label"].tolist()],
-                              dtype=torch.long).to(self.device)
-        return encodings, labels
+        # ---------------------------
+        # Classifier head
+        # ---------------------------
+        hidden_size = self.config.hidden_size
+        self.classifier = nn.Linear(hidden_size, num_labels)
+
+        # Inizializzazione Xavier
+        nn.init.xavier_uniform_(self.classifier.weight)
+        if self.classifier.bias is not None:
+            nn.init.zeros_(self.classifier.bias)
 
     # ---------------------------
-    # Single training step
+    # Forward
     # ---------------------------
-    def train_step(self, batch):
-        self.model.train()
-        encodings, labels = self.prepare_batch(batch)
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        """
+        Forward pass. Ritorna loss se labels è passato, altrimenti solo logits.
+        """
+        # backbone
+        outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
+        cls_token = outputs.last_hidden_state[:, 0]  # token [CLS]
 
-        # Forward pass
-        outputs = self.model(
-            input_ids=encodings["input_ids"],
-            attention_mask=encodings["attention_mask"],
-            labels=labels
+        logits = self.classifier(cls_token)
+
+        loss = None
+        if labels is not None:
+            loss_fn = nn.CrossEntropyLoss()
+            loss = loss_fn(logits, labels)
+
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=logits
         )
-
-        loss = outputs.loss
-
-        # Strategie CL (replay, EWC, ecc.)
-        if self.strategy:
-            if hasattr(self.strategy, "compute_loss"):
-                loss = self.strategy.compute_loss(self.loss_fn, outputs.logits, labels)
-            elif hasattr(self.strategy, "ewc_loss"):
-                loss = loss + self.strategy.ewc_loss()
-
-        # Backprop
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        # Aggiorna buffer se presente
-        if hasattr(self.strategy, "update_buffer"):
-            self.strategy.update_buffer(
-                {"input_ids": encodings["input_ids"], "attention_mask": encodings["attention_mask"]},
-                labels
-            )
-
-        preds = torch.argmax(outputs.logits, dim=1)
-        loss_value = loss.item() if loss is not None else 0.0
-
-        return loss_value, preds.cpu(), labels.cpu()
-
-    # ---------------------------
-    # Train su stream continuo
-    # ---------------------------
-    def train_continual(self, stream, log_every=10):
-        all_losses = []
-        all_preds = []
-        all_labels = []
-
-        for i, batch in enumerate(tqdm(stream, desc="Training")):
-            loss, preds, labels = self.train_step(batch)
-            all_losses.append(loss)
-            all_preds.append(preds)
-            all_labels.append(labels)
-
-            if (i + 1) % log_every == 0 or i == len(stream)-1:
-                avg_loss = sum(all_losses[max(0, i-log_every+1):i+1]) / min(log_every, i+1)
-                print(f"Batch {i+1}/{len(stream)} | Avg loss: {avg_loss:.4f}")
-
-        return all_losses, all_preds, all_labels
-
-    # ---------------------------
-    # Evaluate su stream senza training
-    # ---------------------------
-    def evaluate_stream(self, stream):
-        self.model.eval()
-        all_preds = []
-        all_labels = []
-
-        with torch.no_grad():
-            for batch in stream:
-                encodings, labels = self.prepare_batch(batch)
-                outputs = self.model(
-                    input_ids=encodings["input_ids"],
-                    attention_mask=encodings["attention_mask"]
-                )
-                preds = torch.argmax(outputs.logits, dim=1)
-                all_preds.append(preds.cpu())
-                all_labels.append(labels.cpu())
-
-        return all_preds, all_labels

@@ -28,9 +28,16 @@ class CustomClassifier(nn.Module):
             for param in self.backbone.parameters():
                 param.requires_grad = False     
 
-        # Sblocca ultimi n layer se richiesto
         if unfreeze_last_n_layers > 0:
-            layers = list(self.backbone.transformer.layer)  # lista degli strati DistilRoBERTa
+            # DistilRoBERTa
+            if hasattr(self.backbone, "distilbert"):
+                layers = list(self.backbone.distilbert.transformer.layer)
+            # RobertaModel standard
+            elif hasattr(self.backbone, "encoder"):
+                layers = list(self.backbone.encoder.layer)
+            else:
+                raise ValueError("Backbone non riconosciuto per lo sblocco dei layer")
+        
             for layer in layers[-unfreeze_last_n_layers:]:
                 for param in layer.parameters():
                     param.requires_grad = True

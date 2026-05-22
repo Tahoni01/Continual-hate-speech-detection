@@ -5,7 +5,7 @@ from transformers import AutoModel, AutoConfig
 from transformers.modeling_outputs import SequenceClassifierOutput
 
 class CustomClassifier(nn.Module):
-    def __init__(self, model_name: str, num_labels: int, freeze_backbone=True):
+    def __init__(self, model_name: str, num_labels: int, freeze_backbone=True, unfreeze_last_n_layers=0):
         """
         Modello di classificazione testuale con backbone transformers (DistilRoBERTa)
         e semplice linear head per continual learning.
@@ -26,7 +26,14 @@ class CustomClassifier(nn.Module):
         # Freeze backbone se richiesto
         if freeze_backbone:
             for param in self.backbone.parameters():
-                param.requires_grad = False
+                param.requires_grad = False     
+
+        # Sblocca ultimi n layer se richiesto
+        if unfreeze_last_n_layers > 0:
+            layers = list(self.backbone.transformer.layer)  # lista degli strati DistilRoBERTa
+            for layer in layers[-unfreeze_last_n_layers:]:
+                for param in layer.parameters():
+                    param.requires_grad = True
 
         # ---------------------------
         # Classifier head

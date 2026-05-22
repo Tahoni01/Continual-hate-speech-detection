@@ -36,35 +36,35 @@ class CustomClassifier(nn.Module):
                     param.requires_grad = True
 
         # ---------------------------
-        # Classifier head
+        # Head MLP migliorata
         # ---------------------------
         hidden_size = self.config.hidden_size
-        self.classifier = nn.Linear(hidden_size, num_labels)
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size // 2, num_labels)
+        )
 
-        # Inizializzazione Xavier
-        nn.init.xavier_uniform_(self.classifier.weight)
-        if self.classifier.bias is not None:
-            nn.init.zeros_(self.classifier.bias)
+        # Inizializzazione pesi
+        for layer in self.classifier:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)
 
-    # ---------------------------
-    # Forward
-    # ---------------------------
     def forward(self, input_ids, attention_mask=None, labels=None):
-        """
-        Forward pass. Ritorna loss se labels è passato, altrimenti solo logits.
-        """
-        # backbone
+        # Backbone
         outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        cls_token = outputs.last_hidden_state[:, 0]  # token [CLS]
+        cls_token = outputs.last_hidden_state[:, 0]
 
+        # Head
         logits = self.classifier(cls_token)
 
+        # Loss
         loss = None
         if labels is not None:
             loss_fn = nn.CrossEntropyLoss()
             loss = loss_fn(logits, labels)
 
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits
-        )
+        return SequenceClassifierOutput(loss=loss, logits=logits)

@@ -6,15 +6,6 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 
 class CustomClassifier(nn.Module):
     def __init__(self, model_name: str, num_labels: int, freeze_backbone=True, unfreeze_last_n_layers=2, dropout_rate= 0.1):
-        """
-        Modello di classificazione testuale con backbone transformers (DistilRoBERTa)
-        e semplice linear head per continual learning.
-        
-        Args:
-            model_name (str): nome del modello pretrained
-            num_labels (int): numero di classi
-            freeze_backbone (bool): se True blocca i pesi del backbone
-        """
         super().__init__()
 
         # ---------------------------
@@ -29,10 +20,8 @@ class CustomClassifier(nn.Module):
                 param.requires_grad = False     
 
         if unfreeze_last_n_layers > 0:
-            # DistilRoBERTa
             if hasattr(self.backbone, "distilbert"):
                 layers = list(self.backbone.distilbert.transformer.layer)
-            # RobertaModel standard
             elif hasattr(self.backbone, "encoder"):
                 layers = list(self.backbone.encoder.layer)
             else:
@@ -42,9 +31,6 @@ class CustomClassifier(nn.Module):
                 for param in layer.parameters():
                     param.requires_grad = True
 
-        # ---------------------------
-        # Head MLP migliorata
-        # ---------------------------
         hidden_size = self.config.hidden_size
         self.classifier = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
@@ -53,7 +39,6 @@ class CustomClassifier(nn.Module):
             nn.Linear(hidden_size // 2, num_labels)
         )
 
-        # Inizializzazione pesi
         for layer in self.classifier:
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)

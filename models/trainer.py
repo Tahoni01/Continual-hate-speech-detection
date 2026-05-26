@@ -2,27 +2,28 @@ import torch
 from torch.optim import AdamW
 from tqdm import tqdm
 
-class ContinualTrainer:
-    def __init__(self, model, tokenizer, device="cuda", lr=2e-5):
 
-        self.device = device
+class ContinualTrainer:
+    def __init__(self, model, tokenizer, device="cuda",lr=2e-5):
+
         self.model = model.to(device)
         self.tokenizer = tokenizer
-
+        self.device = device
+    
         self.optimizer = AdamW(self.model.parameters(), lr=lr)
-        self.loss_fn = torch.nn.CrossEntropyLoss()
+        self.ce_loss = torch.nn.CrossEntropyLoss()
 
-        # OPTIONAL COMPONENTS (set externally)
+        # optional components
         self.replay = None
         self.ewc = None
         self.distillation = None
 
-    # --------------------------
-    # batch encoding
-    # --------------------------
+    # -----------------------
+    # encoding batch
+    # -----------------------
     def prepare_batch(self, batch, label_map):
 
-        encodings = self.tokenizer(
+        enc = self.tokenizer(
             batch["text"].tolist(),
             padding=True,
             truncation=True,
@@ -31,14 +32,15 @@ class ContinualTrainer:
 
         labels = torch.tensor(
             [label_map[x] for x in batch["label"].tolist()],
-            dtype=torch.long
-        ).to(self.device)
+            dtype=torch.long,
+            device=self.device
+        )
 
-        return encodings, labels
+        return enc, labels
 
-    # --------------------------
-    # TRAIN STEP
-    # --------------------------
+    # -----------------------
+    # SINGLE TRAIN STEP
+    # -----------------------
     def train_step(self, batch, label_map):
 
         self.model.train()
@@ -48,54 +50,46 @@ class ContinualTrainer:
         outputs = self.model(**inputs)
         logits = outputs.logits
 
-        # base loss
-        loss = self.loss_fn(logits, labels)
+        # 1) BASE LOSS
+        loss = self.ce_loss(logits, labels)
 
-        # --------------------------
-        # EWC
-        # --------------------------
+        # 2) EWC (regularization)
         if self.ewc is not None:
             loss = loss + self.ewc.ewc_loss()
 
-        # --------------------------
-        # DISTILLATION
-        # --------------------------
+        # 3) DISTILLATION
         if self.distillation is not None:
 
             with torch.no_grad():
-                old_outputs = self.distillation["old_model"](**inputs)
+                teacher_out = self.distillation["old_model"](**inputs)
 
             T = self.distillation.get("temperature", 2.0)
             alpha = self.distillation.get("alpha", 0.5)
 
-            soft_loss = torch.nn.functional.kl_div(
+            distill_loss = torch.nn.functional.kl_div(
                 torch.nn.functional.log_softmax(logits / T, dim=-1),
-                torch.nn.functional.softmax(old_outputs.logits / T, dim=-1),
+                torch.nn.functional.softmax(teacher_out.logits / T, dim=-1),
                 reduction="batchmean"
             ) * (T * T)
 
-            loss = alpha * loss + (1 - alpha) * soft_loss
+            loss = alpha * loss + (1 - alpha) * distill_loss
 
-        # --------------------------
-        # BACKPROP
-        # --------------------------
+        # 4) BACKPROP
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # --------------------------
-        # REPLAY UPDATE
-        # --------------------------
+        # 5) REPLAY BUFFER UPDATE (data-level only)
         if self.replay is not None:
             self.replay.update_buffer(inputs, labels)
 
         preds = torch.argmax(logits, dim=1)
 
-        return loss.item(), preds.cpu(), labels.cpu()
+        return loss.item(), preds.detach().cpu(), labels.detach().cpu()
 
-    # --------------------------
+    # -----------------------
     # TRAIN LOOP
-    # --------------------------
+    # -----------------------
     def train_continual(self, stream, label_map, log_every=10):
 
         losses = []
@@ -115,9 +109,9 @@ class ContinualTrainer:
 
         return losses, preds_list, labels_list
 
-    # --------------------------
-    # EVALUATION
-    # --------------------------
+    # -----------------------
+    # EVAL
+    # -----------------------
     def evaluate(self, stream, label_map):
 
         self.model.eval()
@@ -125,13 +119,11 @@ class ContinualTrainer:
         preds_list, labels_list = [], []
 
         with torch.no_grad():
-
             for batch in stream:
 
                 inputs, labels = self.prepare_batch(batch, label_map)
 
                 outputs = self.model(**inputs)
-
                 preds = torch.argmax(outputs.logits, dim=1)
 
                 preds_list.append(preds.cpu())

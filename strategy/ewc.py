@@ -1,24 +1,34 @@
-# strategies/ewc.py
 import torch
 
 class EWCStrategy:
     def __init__(self, model, lambda_=0.4):
         self.model = model
         self.lambda_ = lambda_
-        self.params = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
-        self.fisher = {n: torch.zeros_like(p) for n, p in model.named_parameters() if p.requires_grad}
+        self.params = {}
+        self.fisher = {}
 
-    def compute_fisher(self, dataloader, criterion):
-        # Estimate diagonal of Fisher information matrix
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                self.params[n] = p.detach().clone()
+                self.fisher[n] = torch.zeros_like(p)
+
+    def compute_fisher(self, dataloader, loss_fn, device):
+        self.model.eval()
+
         for inputs, labels in dataloader:
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            labels = labels.to(device)
+
             self.model.zero_grad()
-            outputs = self.model(inputs)
-            loss = criterion(outputs, labels)
+
+            outputs = self.model(**inputs)
+            loss = loss_fn(outputs.logits, labels)
             loss.backward()
+
             for n, p in self.model.named_parameters():
-                if p.requires_grad:
-                    self.fisher[n] += p.grad.data ** 2
-        # normalize
+                if p.requires_grad and p.grad is not None:
+                    self.fisher[n] += p.grad.detach() ** 2
+
         for n in self.fisher:
             self.fisher[n] /= len(dataloader)
 
@@ -27,4 +37,5 @@ class EWCStrategy:
         for n, p in self.model.named_parameters():
             if p.requires_grad:
                 loss += (self.fisher[n] * (p - self.params[n]) ** 2).sum()
+
         return self.lambda_ * loss

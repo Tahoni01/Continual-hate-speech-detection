@@ -1,27 +1,33 @@
-# strategies/replay.py
 import torch
 import random
 
 class ReplayStrategy:
-    def __init__(self, model, buffer_size=100):
-        self.model = model
+    def __init__(self, buffer_size=200):
         self.buffer = []
         self.buffer_size = buffer_size
 
-    def update_buffer(self, batch_inputs, batch_labels):
-        for x, y in zip(batch_inputs, batch_labels):
+    def update_buffer(self, inputs, labels):
+        input_ids = inputs["input_ids"].detach().cpu()
+        attention_mask = inputs["attention_mask"].detach().cpu()
+        labels = labels.detach().cpu()
+
+        for i in range(len(labels)):
+            sample = (input_ids[i], attention_mask[i], labels[i])
+
             if len(self.buffer) < self.buffer_size:
-                self.buffer.append((x, y))
+                self.buffer.append(sample)
             else:
                 idx = random.randint(0, self.buffer_size - 1)
-                self.buffer[idx] = (x, y)
+                self.buffer[idx] = sample
 
-    def get_replay_batch(self, batch_size=32):
+    def sample(self, batch_size):
         if len(self.buffer) == 0:
-            return None, None
-        samples = random.sample(self.buffer, min(batch_size, len(self.buffer)))
-        inputs, labels = zip(*samples)
-        return torch.stack(inputs), torch.tensor(labels)
+            return None
 
-    def compute_loss(self, criterion, batch_preds, batch_labels):
-        return criterion(batch_preds, batch_labels)
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        input_ids, attention_mask, labels = zip(*batch)
+
+        return {
+            "input_ids": torch.stack(input_ids),
+            "attention_mask": torch.stack(attention_mask)
+        }, torch.tensor(labels)

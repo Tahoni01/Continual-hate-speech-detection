@@ -119,28 +119,25 @@ def plot_classwise_accuracy(flat_preds, flat_labels, label_map, batch_size=10):
 # ─── plot nuovi per continual learning ───────────────────────────────────────
 
 def plot_forgetting(eval_results: dict, label_map: dict):
-    """
-    Mostra il forgetting per task nel tempo.
-
-    eval_results: dict con struttura
-        {
-          "davidson":   [acc_dopo_task1, acc_dopo_task2, ...],
-          "hatexplain": [acc_dopo_task1, acc_dopo_task2, ...]
-        }
-    """
     plt.figure(figsize=(9, 4))
     for task_name, accs in eval_results.items():
-        plt.plot(accs, marker='o', label=task_name)
+        # filtra None per il plot
+        x_vals = [i for i, a in enumerate(accs) if a is not None]
+        y_vals = [a for a in accs if a is not None]
+
+        plt.plot(x_vals, y_vals, marker='o', label=task_name)
+
         # evidenzia il punto di massima accuracy
-        best_idx = int(np.argmax(accs))
-        plt.annotate(f"peak: {accs[best_idx]:.2f}",
-                     xy=(best_idx, accs[best_idx]),
-                     xytext=(best_idx + 0.2, accs[best_idx] - 0.05),
+        best_idx = int(np.argmax(y_vals))
+        plt.annotate(f"peak: {y_vals[best_idx]:.2f}",
+                     xy=(x_vals[best_idx], y_vals[best_idx]),
+                     xytext=(x_vals[best_idx] + 0.1, y_vals[best_idx] - 0.05),
                      fontsize=8, color="gray")
 
     plt.xlabel("Task visto")
     plt.ylabel("Accuracy")
     plt.title("Forgetting per task — accuracy nel tempo")
+    plt.xticks([0, 1], ["Dopo Task 1\n(Davidson)", "Dopo Task 2\n(HateXplain)"])
     plt.ylim(0, 1)
     plt.legend()
     plt.grid(True, alpha=0.3)

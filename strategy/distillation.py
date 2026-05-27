@@ -1,32 +1,42 @@
+# strategy/distillation.py
 import torch
 import torch.nn.functional as F
+from strategy.base import BaseStrategy
 
-class DistillationStrategy:
-    def __init__(self, old_model=None, temperature=2.0, alpha=0.5):
-        self.old_model = old_model
+class DistillationStrategy(BaseStrategy):
+    def __init__(self, temperature=2.0, alpha=0.5):
+        self.old_model   = None   # snapshot del modello precedente
         self.temperature = temperature
-        self.alpha = alpha
+        self.alpha       = alpha
 
-    def loss(self, model, inputs, labels, ce_loss_fn, device):
+    def on_task_end(self, trainer, stream, label_map):
+        """
+        Salva uno snapshot del modello corrente come teacher
+        per il task successivo.
+        """
+        import copy
+        self.old_model = copy.deepcopy(trainer.model)
+        self.old_model.eval()
+        for p in self.old_model.parameters():
+            p.requires_grad = False
+        print("[Distillation] Snapshot teacher aggiornato.")
 
-        # CE loss (new task)
-        outputs = model(**inputs)
-        ce_loss = ce_loss_fn(outputs.logits, labels)
-
+    def compute_loss(self, trainer, inputs, labels, logits):
         if self.old_model is None:
-            return ce_loss
+            return 0.0  # primo task, nessun teacher disponibile
 
-        # old model inference
+        self.old_model = self.old_model.to(trainer.device)
+
         with torch.no_grad():
-            old_outputs = self.old_model(**inputs)
+            teacher_logits = self.old_model(**inputs).logits
 
-        # KL distillation
         T = self.temperature
+        distill_loss = F.kl_div(
+            F.log_softmax(logits / T, dim=-1),
+            F.softmax(teacher_logits / T, dim=-1),
+            reduction="batchmean"
+        ) * (T ** 2)
 
-        soft_loss = F.kl_div(
-            F.log_softmax(outputs.logits / T, dim=-1),
-            F.softmax(old_outputs.logits / T, dim=-1),
-            reduction='batchmean'
-        ) * (T * T)
-
-        return self.alpha * ce_loss + (1 - self.alpha) * soft_loss
+        # nota: la CE loss base viene già calcolata nel trainer
+        # qui restituiamo solo il contributo distillation scalato
+        return (1 - self.alpha) * distill_loss

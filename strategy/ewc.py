@@ -1,41 +1,62 @@
+# strategy/ewc.py
 import torch
+from strategy.base import BaseStrategy
 
-class EWCStrategy:
-    def __init__(self, model, lambda_=0.4):
-        self.model = model
+class EWCStrategy(BaseStrategy):
+    def __init__(self, lambda_=0.4):
         self.lambda_ = lambda_
-        self.params = {}
-        self.fisher = {}
+        self.params  = {}   # pesi di riferimento dopo ogni task
+        self.fisher  = {}   # importanza stimata dei pesi
 
-        for n, p in model.named_parameters():
-            if p.requires_grad:
-                self.params[n] = p.detach().clone()
-                self.fisher[n] = torch.zeros_like(p)
+    def on_task_end(self, trainer, stream, label_map):
+        """
+        Chiamato dopo ogni task:
+        1. Ricalcola la Fisher information sul task appena visto
+        2. Aggiorna i params di riferimento con i pesi correnti
+        """
+        model  = trainer.model
+        device = trainer.device
+        model.eval()
 
-    def compute_fisher(self, dataloader, loss_fn, device):
-        self.model.eval()
+        # reset fisher
+        new_fisher = {n: torch.zeros_like(p)
+                      for n, p in model.named_parameters() if p.requires_grad}
 
-        for inputs, labels in dataloader:
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            labels = labels.to(device)
-
-            self.model.zero_grad()
-
-            outputs = self.model(**inputs)
-            loss = loss_fn(outputs.logits, labels)
+        n_batches = 0
+        for batch in stream:
+            inputs, labels = trainer.prepare_batch(batch, label_map)
+            model.zero_grad()
+            outputs = model(**inputs)
+            loss = trainer.ce_loss(outputs.logits, labels)
             loss.backward()
 
-            for n, p in self.model.named_parameters():
+            for n, p in model.named_parameters():
                 if p.requires_grad and p.grad is not None:
-                    self.fisher[n] += p.grad.detach() ** 2
+                    new_fisher[n] += p.grad.detach() ** 2
+            n_batches += 1
 
-        for n in self.fisher:
-            self.fisher[n] /= len(dataloader)
+        # media + accumulo (supporta task multipli)
+        for n in new_fisher:
+            new_fisher[n] /= max(n_batches, 1)
+            if n in self.fisher:
+                self.fisher[n] = (self.fisher[n] + new_fisher[n]) / 2
+            else:
+                self.fisher[n] = new_fisher[n]
 
-    def ewc_loss(self):
-        loss = 0
-        for n, p in self.model.named_parameters():
-            if p.requires_grad:
+        # snapshot dei pesi correnti come nuovo riferimento
+        self.params = {n: p.detach().clone()
+                       for n, p in model.named_parameters() if p.requires_grad}
+
+        model.train()
+        print(f"[EWC] Fisher aggiornata su {n_batches} batch.")
+
+    def compute_loss(self, trainer, inputs, labels, logits):
+        if not self.params:
+            return 0.0  # nessun task precedente ancora
+
+        loss = 0.0
+        for n, p in trainer.model.named_parameters():
+            if p.requires_grad and n in self.fisher:
                 loss += (self.fisher[n] * (p - self.params[n]) ** 2).sum()
 
         return self.lambda_ * loss

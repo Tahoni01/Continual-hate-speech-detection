@@ -1,6 +1,7 @@
 import torch
 from torch.optim import AdamW
 from tqdm import tqdm
+from strategy.replay import ReplayStrategy
 
 
 class ContinualTrainer:
@@ -10,10 +11,17 @@ class ContinualTrainer:
         self.device = device
         self.optimizer = AdamW(self.model.parameters(), lr=lr)
         self.ce_loss = torch.nn.CrossEntropyLoss()
+        self.strategies = []  # ← fix: era mancante
 
-        self.replay = None
-        self.ewc = None
-        self.distillation = None
+    # -----------------------
+    # STRATEGY
+    # -----------------------
+    def add_strategy(self, strategy):
+        self.strategies.append(strategy)
+
+    def on_task_end(self, stream, label_map):
+        for strategy in self.strategies:
+            strategy.on_task_end(self, stream, label_map)
 
     # -----------------------
     # ENCODE BATCH
@@ -34,26 +42,12 @@ class ContinualTrainer:
         return enc, labels
 
     # -----------------------
-    # LOSS (base + EWC + distillation)
+    # LOSS (base + strategie)
     # -----------------------
-    def _compute_loss(self, logits, labels, inputs=None):
+    def _compute_loss(self, inputs, labels, logits):
         loss = self.ce_loss(logits, labels)
-
-        if self.ewc is not None:
-            loss = loss + self.ewc.ewc_loss()
-
-        if self.distillation is not None and inputs is not None:
-            with torch.no_grad():
-                teacher_logits = self.distillation.old_model(**inputs).logits
-            T     = self.distillation.temperature
-            alpha = self.distillation.alpha
-            distill_loss = torch.nn.functional.kl_div(
-                torch.nn.functional.log_softmax(logits / T, dim=-1),
-                torch.nn.functional.softmax(teacher_logits / T, dim=-1),
-                reduction="batchmean"
-            ) * (T ** 2)
-            loss = alpha * loss + (1 - alpha) * distill_loss
-
+        for strategy in self.strategies:
+            loss = loss + strategy.compute_loss(self, inputs, labels, logits)
         return loss
 
     # -----------------------
@@ -64,17 +58,18 @@ class ContinualTrainer:
 
         inputs, labels = self.prepare_batch(batch, label_map)
         outputs = self.model(**inputs)
-        loss = self._compute_loss(outputs.logits, labels, inputs)
+        loss = self._compute_loss(inputs, labels, outputs.logits)  # ← fix: ordine args
 
-        # REPLAY: allena sui campioni del buffer + aggiorna il buffer
-        if self.replay is not None:
-            replay_inputs, replay_labels = self.replay.sample(len(labels))
-            if replay_inputs is not None:
-                replay_inputs  = {k: v.to(self.device) for k, v in replay_inputs.items()}
-                replay_labels  = replay_labels.to(self.device)
-                replay_outputs = self.model(**replay_inputs)
-                loss = loss + self._compute_loss(replay_outputs.logits, replay_labels)
-            self.replay.update_buffer(inputs, labels)
+        # REPLAY — gestito tramite strategia
+        for strategy in self.strategies:
+            if isinstance(strategy, ReplayStrategy):
+                replay_inputs, replay_labels = strategy.sample(len(labels))
+                if replay_inputs is not None:
+                    replay_inputs  = {k: v.to(self.device) for k, v in replay_inputs.items()}
+                    replay_labels  = replay_labels.to(self.device)
+                    replay_outputs = self.model(**replay_inputs)
+                    loss = loss + self.ce_loss(replay_outputs.logits, replay_labels)
+                strategy.update_buffer(inputs, labels)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -97,9 +92,8 @@ class ContinualTrainer:
 
             if (i + 1) % log_every == 0:
                 avg = sum(losses[-log_every:]) / log_every
-                print(f"[batch {i+1}] avg loss: {avg:.4f}")
+                #print(f"[batch {i+1}] avg loss: {avg:.4f}")
 
-        # restituisce tensori flat direttamente
         return losses, torch.cat(preds_list), torch.cat(labels_list)
 
     # -----------------------

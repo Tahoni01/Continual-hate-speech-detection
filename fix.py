@@ -1,6 +1,6 @@
 import nbformat
 
-path = "old_main.ipynb"
+path = "Main.ipynb"
 
 nb = nbformat.read(path, as_version=4)
 

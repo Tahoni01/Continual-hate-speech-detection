@@ -20,12 +20,15 @@ class CustomClassifier(nn.Module):
                 param.requires_grad = False     
 
         if unfreeze_last_n_layers > 0:
-            if hasattr(self.backbone, "distilbert"):
-                layers = list(self.backbone.distilbert.transformer.layer)
+            if hasattr(self.backbone, "transformer"):
+                layers = list(self.backbone.transformer.layer)
+
             elif hasattr(self.backbone, "encoder"):
                 layers = list(self.backbone.encoder.layer)
+
             else:
-                raise ValueError("Backbone non riconosciuto per lo sblocco dei layer")
+                print("Warning: nessun layer sbloccato")
+                layers = []
         
             for layer in layers[-unfreeze_last_n_layers:]:
                 for param in layer.parameters():

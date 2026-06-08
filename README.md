@@ -1,95 +1,263 @@
-# Continual-hate-speech-detection# Continual Hate Speech Detection with DistilRoBERTa
+# Continual Hate Speech Detection
 
-This project explores **Continual Learning (CL)** for text classification in the domain of **hate speech detection**, using a pretrained transformer model (DistilRoBERTa) and multiple anti-forgetting strategies.
+> Sequential learning on evolving social media streams with automatic drift detection and anti-forgetting strategies.
 
-The goal is to simulate a **data stream setting**, where new data arrives sequentially and the model must adapt without forgetting previous knowledge.
-
----
-
-## 🧠 Problem Setting
-
-In real-world NLP applications, data is not static. Models deployed in production face:
-
-- data distribution shifts
-- new linguistic patterns
-- evolving hate/offensive language
-- catastrophic forgetting
-
-This project addresses these challenges using continual learning techniques.
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![PyTorch](https://img.shields.io/badge/pytorch-2.7.0+cu128-orange)
+![Transformers](https://img.shields.io/badge/transformers-4.51.3-yellow)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## ⚙️ Model
+## Overview
 
-The base model used is:
+Hate speech detection systems trained on static datasets degrade quickly when deployed in real-world environments where language evolves continuously. This project addresses the problem through **Continual Learning (CL)**: training a DistilRoBERTa-based classifier sequentially on two hate speech datasets that differ significantly in class distribution, simulating an abrupt distribution shift without any task boundary information available to the model.
 
-- `DistilRoBERTa` (HuggingFace Transformers)
+The core contributions are:
 
-A classification head is added on top for:
-
-- Hate Speech
-- Offensive Language
-- Normal Content
-
----
-
-## 📊 Continual Learning Strategies
-
-This project implements and compares multiple strategies:
-
-### 🔁 1. Replay Strategy
-Stores past samples in a memory buffer and replays them during training to reduce forgetting.
-
-### 🧠 2. EWC (Elastic Weight Consolidation)
-Adds a regularization term to preserve important weights based on Fisher Information.
-
-### 🎓 3. Knowledge Distillation
-Uses a previous model (teacher) to maintain past knowledge while learning new data.
+- A fully online CL pipeline with **ADWIN-based drift detection** that identifies distribution shifts automatically without requiring explicit task boundaries
+- A **Continual Hyperparameter Selection** module that searches for optimal strategy parameters at drift time using only data seen so far, following the algorithm proposed by De Lange et al.
+- Implementation and comparison of three anti-forgetting strategies: **Class-Balanced Reservoir Replay**, **Elastic Weight Consolidation (EWC)**, and **Dark Experience Replay++ (DER++)**
+- An interactive **Gradio demo** for qualitative comparison of model predictions across strategies
 
 ---
 
-## 🏗️ Project Structure
+## Problem Setup
 
+The model observes a continuous stream of hate speech samples from two datasets in sequence:
 
----
+```
+Davidson (19k samples, 78% offensive) ──► HateXplain (15k samples, balanced)
+```
 
-## 🚀 Training Pipeline
+No shuffling occurs between datasets — the shift is abrupt and the model has no prior knowledge of when or how it will occur. The training objective is to maintain performance on Davidson (stability) while adapting to HateXplain (plasticity).
 
-The training follows a **stream-based setup**:
-
-1. Data arrives sequentially (stream)
-2. Each batch is tokenized
-3. Model is trained step-by-step
-4. Optional continual learning strategy is applied
-5. Metrics are computed per batch and globally
+This setup is motivated by real-world content moderation scenarios where a model trained on historical data must adapt to new content trends without forgetting how to detect previously seen patterns.
 
 ---
 
-## 📈 Evaluation Metrics
+## Model Architecture
 
-- Accuracy
-- Macro F1-score
-- Confusion Matrix
-- Per-class accuracy
-- Batch-wise performance tracking
+```
+Input text
+    │
+    ▼
+DistilRoBERTa backbone
+    │  6 transformer layers
+    │  layers 0-2: frozen (general language representations)
+    │  layers 3-5: trainable (task-specific adaptation)
+    │
+    ▼
+[CLS] token representation  (768-dim)
+    │
+    ▼
+Custom classification head
+    Linear(768 → 384) → ReLU → Dropout(0.1) → Linear(384 → 3)
+    │
+    ▼
+Output: hatespeech / offensive / normal
+```
+
+The backbone is partially frozen to preserve general language representations while allowing the upper layers to adapt to the hate speech domain. A differential learning rate is applied: `lr_backbone = 2e-5`, `lr_head = 1e-4`. Label smoothing (`ε = 0.1`) is applied to the cross-entropy loss to reduce overconfidence on the dominant class.
 
 ---
 
-## 📉 Key Observations
+## Drift Detection
 
-During training, the model may exhibit:
+Distribution shift is detected online using **ADWIN** (Adaptive Windowing), which maintains an adaptive window over the error rate stream and triggers when two sub-windows show statistically different means:
 
-- **catastrophic forgetting**
-- **class collapse (predicting a single class)**
-- instability under distribution shift
+$$|\mu_W - \mu_{W'}| \geq \varepsilon_{\text{cut}}$$
 
-These behaviors are expected in continual learning setups without strong balancing mechanisms.
+Key design choices:
+- Error rate is computed per batch (mean of binary correct/incorrect signals)
+- Single trigger per stream — ADWIN fires once and then deactivates
+- At drift detection: LR is decayed by a factor of 0.5, strategy hyperparameters are tuned, and strategy hooks are activated
 
 ---
 
-## 🧪 How to Run
+## Anti-Forgetting Strategies
+
+### Baseline
+No anti-forgetting mechanism. Provides the lower bound on stability — all strategy improvements are measured relative to this.
+
+### Replay (Class-Balanced Reservoir)
+Maintains one reservoir per class to counteract Davidson's class imbalance. Each class gets equal buffer capacity:
+
+$$\text{slot\_size} = \left\lfloor \frac{\text{buffer\_size}}{\text{n\_classes}} \right\rfloor$$
+
+The buffer fills silently during Davidson and activates only at drift detection, avoiding redundant replay within the same task.
+
+### Replay + EWC
+Combines replay with **Elastic Weight Consolidation** (Kirkpatrick et al., 2017). EWC computes the Practical Fisher Information on the recent data buffer at drift detection and penalizes deviations from reference parameters:
+
+$$L_{EWC} = L_{CE} + \lambda \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
+
+EWC is used in its offline variant here — online Fisher accumulation would be contaminated by the replay gradients mixing the two task distributions.
+
+### DER++
+**Dark Experience Replay++** (Buzzega et al., 2020) extends replay by storing the model's output logits at insertion time. At replay, an MSE term penalizes changes to the model's past output distributions:
+
+$$L_{DER++} = L_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L_{CE}(\hat{z}, y^*)$$
+
+This provides functional regularization — preserving what the model *used to predict*, not just which parameters it used.
+
+---
+
+## Continual Hyperparameter Selection
+
+At drift detection, a grid search is performed on the recent data buffer following the algorithm from De Lange et al.:
+
+1. **Plasticity ceiling** — fine-tune on new-task samples with no strategy → get accuracy $A$
+2. **For each HP config** — mini-train with strategy on recent buffer → measure $A^*$ and forgetting
+3. **Accept** if $A^* \geq A \cdot (1 - p)$ with $p = 0.05$ (5% plasticity tolerance)
+4. **Select** the accepted config that minimizes forgetting
+
+This is fully online — only data already seen is used. No look-ahead.
+
+| Strategy | Tunable parameter | Search values |
+|---|---|---|
+| EWC | `lambda_` | 0.01, 0.1, 1.0 |
+| DER++ | `alpha` | 0.1, 0.3, 0.5 |
+
+---
+
+## CL Metrics
+
+| Metric | Formula | Interpretation |
+|---|---|---|
+| **BWT** | $R_{T,i} - R_{i,i}$ | Forgetting — negative means performance dropped on old task |
+| **FWT** | $R_{i-1,i} - b_i$ | Zero-shot transfer to new task before training on it |
+| **AAA** | $\frac{1}{T \cdot \|\mathcal{E}\|} \sum_{e,i} R_{e,i}$ | Average accuracy across all tasks at every checkpoint |
+
+---
+
+## Results
+
+Results on the Davidson → HateXplain stream (batch_size=32, ADWIN δ=0.002, lr_decay=0.5):
+
+| Strategy | BWT ↑ | FWT | AAA ↑ | DV F1 ↑ | HX F1 ↑ | Drift batch |
+|---|---|---|---|---|---|---|
+| Baseline | -0.33 | 0.43 | 0.63 | 0.48 | 0.60 | 671 |
+| Replay | -0.13 | 0.47 | 0.67 | 0.59 | 0.66 | 671 |
+| Replay+EWC | -0.15 | 0.43 | 0.65 | 0.59 | 0.63 | 671 |
+| **DER++** | **-0.12** | 0.44 | **0.68** | **0.61** | **0.65** | 671 |
+
+DER++ achieves the best BWT and AAA, reducing forgetting by ~64% relative to the Baseline while maintaining competitive HateXplain F1.
+
+---
+
+## Project Structure
+
+```
+continual-hate-speech-detection/
+│
+├── dataset/
+│   ├── df_loader.py          # Davidson and HateXplain loaders, label map
+│   └── stream_generator.py   # Continual stream construction (no inter-dataset shuffle)
+│
+├── model/
+│   └── model.py              # DistilRoBERTa + classification head
+│
+├── strategy/
+│   ├── base.py               # BaseStrategy interface
+│   ├── replay.py             # Class-balanced reservoir replay
+│   ├── ewc.py                # EWC (offline, triggered at drift)
+│   └── derpp.py              # DER++ (boundary-free, logits in buffer)
+│
+├── utils/
+│   ├── metrics.py            # BWT, FWT, AAA, accuracy, F1
+│   └── plot_utils.py         # Training curves, confusion matrices, comparison plots
+│
+├── trainer.py                # ContinualTrainer with ADWIN integration
+├── tuner.py                  # Continual HP selection via grid search
+│
+├── main.ipynb                # Full training pipeline and experiment comparison
+├── demo.ipynb                # Interactive Gradio demo
+│
+├── models/                   # Saved checkpoints (generated after training)
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Installation
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/<your-username>/continual-hate-speech-detection
+cd continual-hate-speech-detection
+python -m venv .venv
+```
 
-python main.py
+**Windows:**
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+**Linux/macOS:**
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies (PyTorch must be installed first with the correct CUDA index):
+
+```bash
+pip install torch==2.7.0+cu128 torchvision==0.22.0+cu128 torchaudio==2.7.0+cu128 \
+    --extra-index-url https://download.pytorch.org/whl/cu128
+
+pip install -r requirements.txt
+```
+
+> **Note**: the `cu128` build requires an RTX 40/50 series GPU (CUDA 12.8+). For older GPUs, replace `cu128` with the appropriate CUDA version.
+
+---
+
+## Usage
+
+### Training
+
+Open `main.ipynb` and run cells sequentially. Each experiment cell trains one strategy and saves the model to `models/`.
+
+### Demo
+
+After training, open `demo.ipynb` and run all cells. The Gradio interface will launch at `http://localhost:7860`.
+
+Alternatively, run the standalone script:
+
+```bash
+python demo.py
+```
+
+---
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---|---|---|
+| `torch` | 2.7.0+cu128 | Training, tensors |
+| `transformers` | 4.51.3 | DistilRoBERTa backbone |
+| `datasets` | 3.6.0 | Davidson dataset loading |
+| `river` | 0.21.2 | ADWIN drift detector |
+| `scikit-learn` | 1.6.1 | Metrics, class weights |
+| `pandas` | 2.2.3 | DataFrame operations |
+| `matplotlib` | 3.10.3 | Training plots |
+| `seaborn` | 0.13.2 | Confusion matrices |
+| `gradio` | latest | Interactive demo |
+| `plotly` | latest | Demo visualizations |
+
+---
+
+## References
+
+- Kirkpatrick, J. et al. (2017). *Overcoming catastrophic forgetting in neural networks*. PNAS.
+- Buzzega, P. et al. (2020). *Dark Experience for General Continual Learning: a Strong, Simple Baseline*. NeurIPS.
+- De Lange, M. et al. (2021). *A Continual Learning Survey*. IEEE TPAMI.
+- Davidson, T. et al. (2017). *Automated Hate Speech Detection and the Problem of Offensive Language*. ICWSM.
+- Mathew, B. et al. (2021). *HateXplain: A Benchmark Dataset for Explainable Hate Speech Detection*. AAAI.
+- Bifet, A. & Gavalda, R. (2007). *Learning from time-changing data with adaptive windowing*. SDM.
+
+---
+
+## License
+
+MIT

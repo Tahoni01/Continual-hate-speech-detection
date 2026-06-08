@@ -124,7 +124,7 @@ def plot_eval_log(eval_log, boundary=None):
     plt.grid(alpha=0.3)
     plt.tight_layout()
     plt.show()
-
+    
 
 def plot_conf_matrix(preds, labels, label_map, title=""):
     import torch
@@ -136,20 +136,16 @@ def plot_conf_matrix(preds, labels, label_map, title=""):
         labels = labels.cpu().numpy()
 
     cm    = confusion_matrix(labels, preds)
-    norm  = cm / (cm.sum(axis=1, keepdims=True) + 1e-8)
     names = list(label_map.keys())
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, data, fmt, t in zip(axes, [cm, norm], ["d", ".2f"], ["counts", "normalized"]):
-        sns.heatmap(data, annot=True, fmt=fmt, cmap="Blues",
-                    xticklabels=names, yticklabels=names, ax=ax)
-        ax.set_title(f"{title} ({t})" if title else t)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("True")
-
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=names, yticklabels=names, ax=ax)
+    ax.set_title(title if title else "Confusion Matrix")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
     plt.tight_layout()
     plt.show()
-
 
 # ─── FINAL COMPARISON ────────────────────────────────────────────────────────
 

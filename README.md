@@ -83,7 +83,7 @@ No anti-forgetting mechanism. Provides the lower bound on stability, all strateg
 ### Replay (Class-Balanced Reservoir)
 Maintains one reservoir per class to counteract Davidson's class imbalance. Each class gets equal buffer capacity:
 
-$$\text{slot\_size} = \left\lfloor \frac{\text{buffer\_size}}{\text{n\_classes}} \right\rfloor$$
+$$slot\_size = \left\lfloor \frac{buffer\_size}{n\_classes} \right\rfloor$$
 
 The buffer fills silently during Davidson and activates only at drift detection, avoiding redundant replay within the same task.
 
@@ -97,7 +97,7 @@ EWC is used in its offline variant here, online Fisher accumulation would be con
 ### DER++
 **Dark Experience Replay++** (Buzzega et al., 2020) extends replay by storing the model's output logits at insertion time. At replay, an MSE term penalizes changes to the model's past output distributions:
 
-$$L\_{DER++} = L\_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L\_{CE}(\hat{z}, y^*)$$
+$$L_{DER++} = L_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L_{CE}(\hat{z}, y^*)$$
 
 This provides functional regularization, preserving what the model *used to predict*, not just which parameters it used.
 

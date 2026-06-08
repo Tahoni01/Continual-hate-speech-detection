@@ -107,8 +107,8 @@ This provides functional regularization, preserving what the model *used to pred
 
 At drift detection, a grid search is performed on the recent data buffer following the algorithm from De Lange et al.:
 
-1. **Plasticity ceiling** — fine-tune on new-task samples with no strategy → get accuracy $A$
-2. **For each HP config** — mini-train with strategy on recent buffer → measure $A^*$ and forgetting
+1. **Plasticity ceiling**  fine-tune on new-task samples with no strategy → get accuracy $A$
+2. **For each HP config**  mini-train with strategy on recent buffer → measure $A^*$ and forgetting
 3. **Accept** if $A^* \geq A \cdot (1 - p)$ with $p = 0.05$ (5% plasticity tolerance)
 4. **Select** the accepted config that minimizes forgetting
 
@@ -125,7 +125,7 @@ This is fully online, only data already seen is used. No look-ahead.
 
 | Metric | Formula | Interpretation |
 |---|---|---|
-| **BWT** | $R_{T,i} - R_{i,i}$ | Forgetting — negative means performance dropped on old task |
+| **BWT** | $R_{T,i} - R_{i,i}$ | Forgetting negative means performance dropped on old task |
 | **FWT** | $R_{i-1,i} - b_i$ | Zero-shot transfer to new task before training on it |
 | **AAA** | $\frac{1}{T \cdot \|\mathcal{E}\|} \sum\_{e,i} R\_{e,i}$ | Average accuracy across all tasks at every checkpoint |
 
@@ -185,7 +185,7 @@ continual-hate-speech-detection/
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/continual-hate-speech-detection
+git clone https://github.com/Tahoni01/Continual-hate-speech-detection.git
 cd continual-hate-speech-detection
 python -m venv .venv
 ```

@@ -66,7 +66,7 @@ The backbone is partially frozen to preserve general language representations wh
 
 Distribution shift is detected online using **ADWIN** (Adaptive Windowing), which maintains an adaptive window over the error rate stream and triggers when two sub-windows show statistically different means:
 
-$$|\mu_W - \mu_{W'}| \geq \varepsilon_{\text{cut}}$$
+$$|\mu\_W - \mu\_{W'}| \geq \varepsilon\_{\text{cut}}$$
 
 Key design choices:
 - Error rate is computed per batch (mean of binary correct/incorrect signals)
@@ -90,14 +90,14 @@ The buffer fills silently during Davidson and activates only at drift detection,
 ### Replay + EWC
 Combines replay with **Elastic Weight Consolidation** (Kirkpatrick et al., 2017). EWC computes the Practical Fisher Information on the recent data buffer at drift detection and penalizes deviations from reference parameters:
 
-$$L_{EWC} = L_{CE} + \lambda \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
+$$L\_{EWC} = L\_{CE} + \lambda \sum\_i F\_i \left(\theta_i - \theta^*\_i\right)^2$$
 
 EWC is used in its offline variant here, online Fisher accumulation would be contaminated by the replay gradients mixing the two task distributions.
 
 ### DER++
 **Dark Experience Replay++** (Buzzega et al., 2020) extends replay by storing the model's output logits at insertion time. At replay, an MSE term penalizes changes to the model's past output distributions:
 
-$$L_{DER++} = L_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L_{CE}(\hat{z}, y^*)$$
+$$L\_{DER++} = L\_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L\_{CE}(\hat{z}, y^*)$$
 
 This provides functional regularization, preserving what the model *used to predict*, not just which parameters it used.
 
@@ -127,7 +127,7 @@ This is fully online, only data already seen is used. No look-ahead.
 |---|---|---|
 | **BWT** | $R_{T,i} - R_{i,i}$ | Forgetting — negative means performance dropped on old task |
 | **FWT** | $R_{i-1,i} - b_i$ | Zero-shot transfer to new task before training on it |
-| **AAA** | $\frac{1}{T \cdot \|\mathcal{E}\|} \sum_{e,i} R_{e,i}$ | Average accuracy across all tasks at every checkpoint |
+| **AAA** | $\frac{1}{T \cdot \|\mathcal{E}\|} \sum\_{e,i} R\_{e,i}$ | Average accuracy across all tasks at every checkpoint |
 
 ---
 

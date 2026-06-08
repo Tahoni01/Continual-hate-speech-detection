@@ -34,10 +34,13 @@ class ContinualTrainer:
         self.drift_detected = False
         self.drift_batch    = None
 
-        # rolling buffer of recent batches — passed to on_task_end and tuner at drift
+        # deque gives O(1) append and automatic eviction a plain list would
+        # be O(n) every time the buffer overflows, which adds up over 1000+ batches
         self._recent_batches = deque(maxlen=buffer_size)
 
     def _make_optimizer(self):
+        # if the model exposes parameter_groups, use differential LR
+        # otherwise fall back to a single group for simpler architectures
         if hasattr(self.model, "parameter_groups"):
             return AdamW(self.model.parameter_groups(self.lr, self.lr_head))
         return AdamW(self.model.parameters(), lr=self.lr)
@@ -57,12 +60,14 @@ class ContinualTrainer:
         for s in self.strategies:
             s.on_task_end(self, src)
 
-    # ── checkpoint ──────────────────────────────────────────────────────────
+    #   checkpoint 
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)
 
     def load(self, path):
+        # reset everything, a loaded model should behave like a freshly trained one
+
         self.model.load_state_dict(torch.load(path, map_location=self.device,
                                               weights_only=True))
         self.optimizer      = self._make_optimizer()
@@ -75,7 +80,7 @@ class ContinualTrainer:
         self.drift_batch    = None
         self._recent_batches.clear()
 
-    # ── encoding ─────────────────────────────────────────────────────────────
+    #   encoding 
 
     def _encode(self, batch, label_map):
         enc = self.tokenizer(
@@ -92,7 +97,7 @@ class ContinualTrainer:
         )
         return enc, labels
 
-    # ── evaluation ───────────────────────────────────────────────────────────
+    #    evaluation 
 
     def _run_eval(self, val_stream, label_map, return_preds=False):
         self.model.eval()
@@ -111,9 +116,11 @@ class ContinualTrainer:
     def evaluate(self, val_stream, label_map):
         return self._run_eval(val_stream, label_map, return_preds=True)
 
-    # ── drift detection ──────────────────────────────────────────────────────
+    #    drift detection 
 
     def _update_detector(self, preds, labels, batch_idx):
+        # per-batch mean is more stable than per-sample binary values
+        # binary feed caused ADWIN to trigger during the learning phase
         error_rate = (preds != labels).float().mean().item()
         self.detector.update(error_rate)
 
@@ -131,7 +138,7 @@ class ContinualTrainer:
                 self.tuner.tune(self, list(self._recent_batches))
             self.on_task_end()
 
-    # ── training loop ────────────────────────────────────────────────────────
+    #    training loop 
 
     def train(self, stream, label_map, val_streams: dict, eval_every=50):
         """
@@ -152,13 +159,17 @@ class ContinualTrainer:
                     for s in self.strategies
                 )
 
+            # set_to_none is faster than zero_(), skips the memset entirely
             self.optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
+            # clip before the optimizer step so spikes don't corrupt the weights
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
+            #track both losses — task loss is the clean signal for plotting,
+            # total loss includes replay/regularization overhead
             task_losses.append(out.loss.item())
             total_losses.append(total_loss.item())
 
@@ -174,6 +185,7 @@ class ContinualTrainer:
                     entry[name] = self._run_eval(vs, label_map)
                 self.eval_log.append(entry)
 
+        # one final eval at the end of the stream regardless of eval_every
         entry = {"batch": len(stream)}
         for name, vs in val_streams.items():
             entry[name] = self._run_eval(vs, label_map)

@@ -39,7 +39,7 @@ class ContinualTuner:
         self.mini_epochs   = mini_epochs
 
     def _split_batches(self, recent_batches):
-        # the recent buffer contains a mix of old and new task data —
+        # the recent buffer contains a mix of old and new task data
         # we split by source to evaluate forgetting and plasticity separately
         if not recent_batches:
             return [], []
@@ -90,7 +90,7 @@ class ContinualTuner:
 
         print(f"\n[Tuner] HP search on {len(old_batches)} old + {len(new_batches)} new batches")
 
-        # step 1: plasticity ceiling — how well can the model learn the new task
+        # step 1: plasticity ceiling -> how well can the model learn the new task
         # with no regularization at all?
         base_model = copy.deepcopy(trainer.model)
         self._mini_train(base_model, trainer, new_batches)

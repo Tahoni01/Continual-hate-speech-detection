@@ -18,8 +18,9 @@ class HateSpeechClassifier(nn.Module):
         self.config   = AutoConfig.from_pretrained(model_name, num_labels=num_labels)
         self.backbone = AutoModel.from_pretrained(model_name, config=self.config)
 
-        # freeze the whole backbone first, then selectively unfreeze the top layers —
-        # lower layers capture general language patterns we want to keep intact
+        # freeze everything first, then open up the top layers — lower layers
+        # encode syntax and basic semantics that transfer well across domains,
+        # so there's no point in updating them with hate speech data
         for p in self.backbone.parameters():
             p.requires_grad = False
 
@@ -36,15 +37,20 @@ class HateSpeechClassifier(nn.Module):
             nn.Linear(hidden // 2, num_labels),
         )
 
+        # xavier init keeps activations in a reasonable range from the first batch 
+        # random weights would otherwise produce garbage logits until the head warms up
         for m in self.head:
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.zeros_(m.bias)
 
+        # label_smoothing=0.1 prevents the model from becoming overconfident on
+        # the offensive class, which dominates Davidson at 78%
         self.criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
 
     def parameter_groups(self, lr_backbone=2e-5, lr_head=1e-4):
-        # the head trains from scratch so it needs a higher LR than the backbone
+        # head is initialized from scratch so it needs a higher LR to catch up
+        # with the pretrained backbone in the early batches
         return [
             {"params": [p for p in self.backbone.parameters() if p.requires_grad],
              "lr": lr_backbone},

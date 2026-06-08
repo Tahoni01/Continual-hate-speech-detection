@@ -6,14 +6,6 @@ from river.drift import ADWIN
 
 
 class ContinualTrainer:
-    """
-    Online continual learning trainer with ADWIN drift detection.
-
-    Each batch error rate is fed to ADWIN. When drift is detected, the tuner
-    searches for optimal strategy hyperparameters on the recent buffer, then
-    on_task_end activates all strategy hooks.
-    """
-
     def __init__(self, model, tokenizer, device, lr=2e-5, lr_head=1e-4,
                  adwin_delta=0.002, buffer_size=200, lr_decay=0.1):
         self.model     = model.to(device)
@@ -34,13 +26,20 @@ class ContinualTrainer:
         self.drift_detected = False
         self.drift_batch    = None
 
-        # deque gives O(1) append and automatic eviction a plain list would
-        # be O(n) every time the buffer overflows, which adds up over 1000+ batches
+        # rolling buffer of recent batches — passed to on_task_end and tuner at drift
         self._recent_batches = deque(maxlen=buffer_size)
 
+    def _split_recent_batches(self):
+        batches = list(self._recent_batches)
+        if not batches:
+            return [], []
+        sources = [b["source"].iloc[0] for b in batches]
+        if len(set(sources)) == 1:
+            return batches, []
+        split = next(i for i in range(1, len(sources)) if sources[i] != sources[i-1])
+        return batches[:split], batches[split:]
+
     def _make_optimizer(self):
-        # if the model exposes parameter_groups, use differential LR
-        # otherwise fall back to a single group for simpler architectures
         if hasattr(self.model, "parameter_groups"):
             return AdamW(self.model.parameter_groups(self.lr, self.lr_head))
         return AdamW(self.model.parameters(), lr=self.lr)
@@ -55,19 +54,18 @@ class ContinualTrainer:
         self.tuner = tuner
         return self
 
-    def on_task_end(self, stream=None):
-        src = list(stream) if stream is not None else list(self._recent_batches)
+    def on_task_end(self, old_batches=None, new_batches=None):
+        if old_batches is None:
+            old_batches, new_batches = self._split_recent_batches()
         for s in self.strategies:
-            s.on_task_end(self, src)
+            s.on_task_end(self, old_batches, new_batches or [])
 
-    #   checkpoint 
+    # ── checkpoint ──────────────────────────────────────────────────────────
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)
 
     def load(self, path):
-        # reset everything, a loaded model should behave like a freshly trained one
-
         self.model.load_state_dict(torch.load(path, map_location=self.device,
                                               weights_only=True))
         self.optimizer      = self._make_optimizer()
@@ -80,7 +78,7 @@ class ContinualTrainer:
         self.drift_batch    = None
         self._recent_batches.clear()
 
-    #   encoding 
+    # ── encoding ─────────────────────────────────────────────────────────────
 
     def _encode(self, batch, label_map):
         enc = self.tokenizer(
@@ -97,7 +95,7 @@ class ContinualTrainer:
         )
         return enc, labels
 
-    #    evaluation 
+    # ── evaluation ───────────────────────────────────────────────────────────
 
     def _run_eval(self, val_stream, label_map, return_preds=False):
         self.model.eval()
@@ -116,11 +114,9 @@ class ContinualTrainer:
     def evaluate(self, val_stream, label_map):
         return self._run_eval(val_stream, label_map, return_preds=True)
 
-    #    drift detection 
+    # ── drift detection ──────────────────────────────────────────────────────
 
     def _update_detector(self, preds, labels, batch_idx):
-        # per-batch mean is more stable than per-sample binary values
-        # binary feed caused ADWIN to trigger during the learning phase
         error_rate = (preds != labels).float().mean().item()
         self.detector.update(error_rate)
 
@@ -134,11 +130,12 @@ class ContinualTrainer:
                 pg["lr"] = pg["lr"] * self.lr_decay
             print(f"[ADWIN] LR decayed by {self.lr_decay}x")
 
+            old_batches, new_batches = self._split_recent_batches()
+            self.on_task_end(old_batches, new_batches)
             if self.tuner is not None:
-                self.tuner.tune(self, list(self._recent_batches))
-            self.on_task_end()
+                self.tuner.tune(self, old_batches, new_batches)
 
-    #    training loop 
+    # ── training loop ────────────────────────────────────────────────────────
 
     def train(self, stream, label_map, val_streams: dict, eval_every=50):
         """
@@ -159,17 +156,13 @@ class ContinualTrainer:
                     for s in self.strategies
                 )
 
-            # set_to_none is faster than zero_(), skips the memset entirely
             self.optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
-            # clip before the optimizer step so spikes don't corrupt the weights
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            #track both losses — task loss is the clean signal for plotting,
-            # total loss includes replay/regularization overhead
             task_losses.append(out.loss.item())
             total_losses.append(total_loss.item())
 
@@ -185,7 +178,6 @@ class ContinualTrainer:
                     entry[name] = self._run_eval(vs, label_map)
                 self.eval_log.append(entry)
 
-        # one final eval at the end of the stream regardless of eval_every
         entry = {"batch": len(stream)}
         for name, vs in val_streams.items():
             entry[name] = self._run_eval(vs, label_map)

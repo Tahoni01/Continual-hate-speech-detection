@@ -3,26 +3,13 @@ from strategy.base import BaseStrategy
 
 
 class EWCStrategy(BaseStrategy):
-    """
-    Elastic Weight Consolidation — offline version triggered by drift detection.
-
-    When ADWIN detects a distribution shift, on_task_end computes the Fisher
-    information on the recent data buffer and saves the current parameters as
-    a reference point. From that moment on, any deviation from those parameters
-    is penalized proportionally to how important each weight was for the old task.
-
-    We use the offline variant (Fisher computed once at drift) rather than online
-    accumulation because combining with Replay would contaminate the Fisher estimate
-    with gradients from both tasks mixed together.
-    """
-
     def __init__(self, lambda_=0.1):
         self.lambda_ = lambda_
         self.fisher  = {}
         self.params  = {}
         self.active  = False
 
-    def on_task_end(self, trainer, stream):
+    def on_task_end(self, trainer, old_batches, new_batches):
         model  = trainer.model
         device = trainer.device
         model.eval()
@@ -31,8 +18,9 @@ class EWCStrategy(BaseStrategy):
         fisher = {n: torch.zeros_like(p)
                   for n, p in model.named_parameters() if p.requires_grad}
 
+        # use only old task batches for Fisher — avoids contamination from new task
         n_batches = 0
-        for batch in stream:
+        for batch in old_batches:
             inputs, _ = trainer._encode(batch, trainer._last_label_map)
             model.zero_grad()
 

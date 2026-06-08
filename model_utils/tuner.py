@@ -5,9 +5,6 @@ from torch.optim import AdamW
 from strategy.ewc   import EWCStrategy
 from strategy.derpp import DERppStrategy
 
-# grid of hyperparameters to search at drift detection.
-# Replay is excluded because buffer_size can't be changed retroactively
-# once the buffer is already filled with samples from the first task.
 SEARCH_SPACES = {
     EWCStrategy: [
         {"lambda_": 0.01},
@@ -23,40 +20,26 @@ SEARCH_SPACES = {
 
 
 class ContinualTuner:
-    """
-    Finds optimal strategy hyperparameters at drift detection using only
-    data seen so far — no look-ahead, fully compatible with online CL.
-
-    Follows the algorithm from De Lange et al.: first find the plasticity
-    ceiling (max accuracy with no regularization), then pick the config
-    that minimizes forgetting while staying within p% of that ceiling.
-    """
-
     def __init__(self, strategies, search_spaces=None, p=0.05, mini_epochs=2):
         self.strategies    = strategies
         self.search_spaces = search_spaces or SEARCH_SPACES
         self.p             = p
         self.mini_epochs   = mini_epochs
 
-    def _split_batches(self, recent_batches):
-        # the recent buffer contains a mix of old and new task data
-        # we split by source to evaluate forgetting and plasticity separately
-        if not recent_batches:
-            return [], []
-        sources = [b["source"].iloc[0] for b in recent_batches]
-        if len(set(sources)) == 1:
-            return recent_batches, []
-        split = next(i for i in range(1, len(sources)) if sources[i] != sources[i-1])
-        return recent_batches[:split], recent_batches[split:]
-
-    def _accuracy(self, model, trainer, batches):
+    def _accuracy(self, model, trainer, batches, encoded=False):
+        # Evaluate accuracy on DataFrame batches or pre-encoded (enc, labels) tuples.
         if not batches:
             return 0.0
         model.eval()
         correct, total = 0, 0
         with torch.no_grad():
             for batch in batches:
-                enc, labels = trainer._encode(batch, trainer._last_label_map)
+                if encoded:
+                    enc, labels = batch
+                    enc    = {k: v.to(trainer.device) for k, v in enc.items()}
+                    labels = labels.to(trainer.device)
+                else:
+                    enc, labels = trainer._encode(batch, trainer._last_label_map)
                 preds = model(**enc).logits.argmax(dim=1)
                 correct += (preds == labels).sum().item()
                 total   += len(labels)
@@ -64,6 +47,7 @@ class ContinualTuner:
         return correct / total if total > 0 else 0.0
 
     def _mini_train(self, model, trainer, batches, strategies=None):
+        # fresh optimizer, avoids momentum bleed from the main optimizer
         optimizer = AdamW(model.parameters(), lr=trainer.lr)
         model.train()
         for _ in range(self.mini_epochs):
@@ -79,31 +63,33 @@ class ContinualTuner:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
-    def tune(self, trainer, recent_batches):
-        if not recent_batches or not self.strategies:
+    def tune(self, trainer, old_batches, new_batches):
+        if not self.strategies:
             return
-
-        old_batches, new_batches = self._split_batches(recent_batches)
         if not new_batches:
             print("[Tuner] Not enough new task data — skipping HP search")
             return
 
+        recent_batches = old_batches + new_batches
         print(f"\n[Tuner] HP search on {len(old_batches)} old + {len(new_batches)} new batches")
 
-        # step 1: plasticity ceiling -> how well can the model learn the new task
-        # with no regularization at all?
+        # step 1: plasticity ceiling on new task with no regularization
         base_model = copy.deepcopy(trainer.model)
         self._mini_train(base_model, trainer, new_batches)
         A = self._accuracy(base_model, trainer, new_batches)
         print(f"[Tuner] Plasticity ceiling A = {A:.4f}")
         del base_model
 
-        # step 2: for each strategy, find the config that minimizes forgetting
-        # while keeping plasticity within p% of the ceiling
         for strategy in self.strategies:
             space = self.search_spaces.get(type(strategy))
             if not space:
                 continue
+
+            # prefer strategy buffer for forgetting eval — spans the full old task
+            old_encoded = strategy.old_task_batches(trainer)
+            if old_encoded is not None:
+                n = sum(len(b[1]) for b in old_encoded)
+                print(f"[Tuner] Forgetting eval on strategy buffer ({n} samples)")
 
             best_config, best_forgetting = None, float("inf")
             print(f"[Tuner] Searching {type(strategy).__name__} over {len(space)} configs...")
@@ -117,8 +103,13 @@ class ContinualTuner:
                 self._mini_train(trial_model, trainer, recent_batches,
                                  strategies=[trial_strategy])
 
-                A_star     = self._accuracy(trial_model, trainer, new_batches)
-                forgetting = 1.0 - self._accuracy(trial_model, trainer, old_batches)
+                A_star = self._accuracy(trial_model, trainer, new_batches)
+
+                if old_encoded is not None:
+                    forgetting = 1.0 - self._accuracy(trial_model, trainer,
+                                                       old_encoded, encoded=True)
+                else:
+                    forgetting = 1.0 - self._accuracy(trial_model, trainer, old_batches)
 
                 print(f"  {config} → A*={A_star:.4f} forgetting={forgetting:.4f}", end="")
 

@@ -16,7 +16,7 @@ Hate speech detection systems trained on static datasets degrade quickly when de
 The core contributions are:
 
 - A fully online CL pipeline with **ADWIN-based drift detection** that identifies distribution shifts automatically without requiring explicit task boundaries
-- A **Continual Hyperparameter Selection** module that searches for optimal strategy parameters at drift time using only data seen so far, following the algorithm proposed by De Lange et al.
+- A **Continual Hyperparameter Selection** module that searches for optimal strategy parameters at drift time using only data seen so far.
 - Implementation and comparison of three anti-forgetting strategies: **Class-Balanced Reservoir Replay**, **Elastic Weight Consolidation (EWC)**, and **Dark Experience Replay++ (DER++)**
 - An interactive **Gradio demo** for qualitative comparison of model predictions across strategies
 
@@ -30,7 +30,7 @@ The model observes a continuous stream of hate speech samples from two datasets 
 Davidson (19k samples, 78% offensive) ──► HateXplain (15k samples, balanced)
 ```
 
-No shuffling occurs between datasets — the shift is abrupt and the model has no prior knowledge of when or how it will occur. The training objective is to maintain performance on Davidson (stability) while adapting to HateXplain (plasticity).
+No shuffling occurs between datasets, the shift is abrupt and the model has no prior knowledge of when or how it will occur. The training objective is to maintain performance on Davidson (stability) while adapting to HateXplain (plasticity).
 
 This setup is motivated by real-world content moderation scenarios where a model trained on historical data must adapt to new content trends without forgetting how to detect previously seen patterns.
 
@@ -70,7 +70,7 @@ $$|\mu_W - \mu_{W'}| \geq \varepsilon_{\text{cut}}$$
 
 Key design choices:
 - Error rate is computed per batch (mean of binary correct/incorrect signals)
-- Single trigger per stream — ADWIN fires once and then deactivates
+- Single trigger per stream, ADWIN fires once and then deactivates
 - At drift detection: LR is decayed by a factor of 0.5, strategy hyperparameters are tuned, and strategy hooks are activated
 
 ---
@@ -78,7 +78,7 @@ Key design choices:
 ## Anti-Forgetting Strategies
 
 ### Baseline
-No anti-forgetting mechanism. Provides the lower bound on stability — all strategy improvements are measured relative to this.
+No anti-forgetting mechanism. Provides the lower bound on stability, all strategy improvements are measured relative to this.
 
 ### Replay (Class-Balanced Reservoir)
 Maintains one reservoir per class to counteract Davidson's class imbalance. Each class gets equal buffer capacity:
@@ -92,14 +92,14 @@ Combines replay with **Elastic Weight Consolidation** (Kirkpatrick et al., 2017)
 
 $$L_{EWC} = L_{CE} + \lambda \sum_i F_i \left(\theta_i - \theta^*_i\right)^2$$
 
-EWC is used in its offline variant here — online Fisher accumulation would be contaminated by the replay gradients mixing the two task distributions.
+EWC is used in its offline variant here, online Fisher accumulation would be contaminated by the replay gradients mixing the two task distributions.
 
 ### DER++
 **Dark Experience Replay++** (Buzzega et al., 2020) extends replay by storing the model's output logits at insertion time. At replay, an MSE term penalizes changes to the model's past output distributions:
 
 $$L_{DER++} = L_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^*) + \beta \cdot L_{CE}(\hat{z}, y^*)$$
 
-This provides functional regularization — preserving what the model *used to predict*, not just which parameters it used.
+This provides functional regularization, preserving what the model *used to predict*, not just which parameters it used.
 
 ---
 
@@ -112,7 +112,7 @@ At drift detection, a grid search is performed on the recent data buffer followi
 3. **Accept** if $A^* \geq A \cdot (1 - p)$ with $p = 0.05$ (5% plasticity tolerance)
 4. **Select** the accepted config that minimizes forgetting
 
-This is fully online — only data already seen is used. No look-ahead.
+This is fully online, only data already seen is used. No look-ahead.
 
 | Strategy | Tunable parameter | Search values |
 |---|---|---|
@@ -155,8 +155,12 @@ continual-hate-speech-detection/
 │   ├── df_loader.py          # Davidson and HateXplain loaders, label map
 │   └── stream_generator.py   # Continual stream construction (no inter-dataset shuffle)
 │
-├── model/
-│   └── model.py              # DistilRoBERTa + classification head
+├── model_utils/
+│   ├── model_builder.py      # DistilRoBERTa + classification head
+│   ├── trainer.py            # ContinualTrainer with ADWIN integration
+│   └── tuner.py              # Continual HP selection via grid search
+│
+├── models/                   # Saved checkpoints (generated after training)
 │
 ├── strategy/
 │   ├── base.py               # BaseStrategy interface
@@ -168,13 +172,10 @@ continual-hate-speech-detection/
 │   ├── metrics.py            # BWT, FWT, AAA, accuracy, F1
 │   └── plot_utils.py         # Training curves, confusion matrices, comparison plots
 │
-├── trainer.py                # ContinualTrainer with ADWIN integration
-├── tuner.py                  # Continual HP selection via grid search
 │
 ├── main.ipynb                # Full training pipeline and experiment comparison
 ├── demo.ipynb                # Interactive Gradio demo
 │
-├── models/                   # Saved checkpoints (generated after training)
 ├── requirements.txt
 └── README.md
 ```
@@ -187,16 +188,6 @@ continual-hate-speech-detection/
 git clone https://github.com/<your-username>/continual-hate-speech-detection
 cd continual-hate-speech-detection
 python -m venv .venv
-```
-
-**Windows:**
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-**Linux/macOS:**
-```bash
-source .venv/bin/activate
 ```
 
 Install dependencies (PyTorch must be installed first with the correct CUDA index):
@@ -221,13 +212,6 @@ Open `main.ipynb` and run cells sequentially. Each experiment cell trains one st
 ### Demo
 
 After training, open `demo.ipynb` and run all cells. The Gradio interface will launch at `http://localhost:7860`.
-
-Alternatively, run the standalone script:
-
-```bash
-python demo.py
-```
-
 ---
 
 ## Dependencies
@@ -244,17 +228,6 @@ python demo.py
 | `seaborn` | 0.13.2 | Confusion matrices |
 | `gradio` | latest | Interactive demo |
 | `plotly` | latest | Demo visualizations |
-
----
-
-## References
-
-- Kirkpatrick, J. et al. (2017). *Overcoming catastrophic forgetting in neural networks*. PNAS.
-- Buzzega, P. et al. (2020). *Dark Experience for General Continual Learning: a Strong, Simple Baseline*. NeurIPS.
-- De Lange, M. et al. (2021). *A Continual Learning Survey*. IEEE TPAMI.
-- Davidson, T. et al. (2017). *Automated Hate Speech Detection and the Problem of Offensive Language*. ICWSM.
-- Mathew, B. et al. (2021). *HateXplain: A Benchmark Dataset for Explainable Hate Speech Detection*. AAAI.
-- Bifet, A. & Gavalda, R. (2007). *Learning from time-changing data with adaptive windowing*. SDM.
 
 ---
 

@@ -97,7 +97,7 @@ EWC is used in its offline variant here, online Fisher accumulation would be con
 ### DER++
 **Dark Experience Replay++** (Buzzega et al., 2020) extends replay by storing the model's output logits at insertion time. At replay, an MSE term penalizes changes to the model's past output distributions:
 
-$$L_{DER++} = L_{CE}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^{*}) + \beta \cdot L_{CE}(\hat{z}, y^{*})$$
+$$L_{\text{DER++}} = L_{\text{CE}}(\text{batch}) + \alpha \cdot \text{MSE}(\hat{z}, z^{*}) + \beta \cdot L_{\text{CE}}(\hat{z}, y^{*})$$
 
 This provides functional regularization, preserving what the model *used to predict*, not just which parameters it used.
 

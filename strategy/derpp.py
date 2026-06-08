@@ -1,25 +1,28 @@
+# strategy/derpp.py
 import random
 import torch
 import torch.nn.functional as F
 from strategy.base import BaseStrategy
 
 
-class ReplayStrategy(BaseStrategy):
+class DERppStrategy(BaseStrategy):
     """
-    Class-balanced reservoir replay.
+    Dark Experience Replay++ (Buzzega et al., 2020).
 
-    Keeps one reservoir per class so the buffer stays balanced regardless
-    of how skewed the stream is (Davidson is 78% offensive, which would
-    otherwise dominate a standard reservoir).
+    Extends replay by storing the model's output logits at the time each
+    sample enters the buffer. At replay time, we penalize the model for
+    producing outputs that differ from those stored logits — this is a form
+    of functional regularization that complements the standard CE on labels.
 
-    The buffer fills during the first task but replay only kicks in after
-    drift detection — replaying Davidson samples on Davidson itself would
-    just add noise without any CL benefit.
+    Like Replay, the buffer fills during the first task but stays inactive
+    until drift is detected.
     """
 
-    def __init__(self, buffer_size=500, n_classes=3):
+    def __init__(self, buffer_size=500, n_classes=3, alpha=0.3, beta=1.0):
         self.buffer_size = buffer_size
         self.n_classes   = n_classes
+        self.alpha       = alpha   # weight for MSE distillation loss
+        self.beta        = beta    # weight for CE on stored labels
         self.buffers     = {c: [] for c in range(n_classes)}
         self.active      = False
 
@@ -34,33 +37,34 @@ class ReplayStrategy(BaseStrategy):
     def on_task_end(self, trainer, stream):
         self.active = True
 
-    def _update(self, inputs, labels):
+    def _update(self, inputs, labels, logits):
         ids  = inputs["input_ids"].detach().cpu()
         mask = inputs["attention_mask"].detach().cpu()
         lbls = labels.detach().cpu()
+        lgts = logits.detach().float().cpu()  # store as float32 to avoid bfloat16 issues
 
         for i in range(len(lbls)):
             c   = lbls[i].item()
             buf = self.buffers[c]
-            sample = (ids[i], mask[i], lbls[i])
+            sample = (ids[i], mask[i], lbls[i], lgts[i])
             if len(buf) < self.slot_size:
                 buf.append(sample)
             else:
-                # reservoir sampling: each sample has equal probability of surviving
                 buf[random.randint(0, self.slot_size - 1)] = sample
 
     def _sample(self, n_per_class):
-        ids_list, mask_list, lbl_list = [], [], []
+        ids_list, mask_list, lbl_list, lgt_list = [], [], [], []
         for buf in self.buffers.values():
             if not buf:
                 continue
-            for ids, mask, lbl in random.sample(buf, min(n_per_class, len(buf))):
+            for ids, mask, lbl, lgt in random.sample(buf, min(n_per_class, len(buf))):
                 ids_list.append(ids)
                 mask_list.append(mask)
                 lbl_list.append(lbl)
+                lgt_list.append(lgt)
 
         if not ids_list:
-            return None, None
+            return None, None, None
 
         max_len = max(t.shape[0] for t in ids_list)
         pad = lambda ts, val: torch.stack(
@@ -69,18 +73,29 @@ class ReplayStrategy(BaseStrategy):
         return (
             {"input_ids": pad(ids_list, 1), "attention_mask": pad(mask_list, 0)},
             torch.stack(lbl_list),
+            torch.stack(lgt_list),
         )
 
     def compute_loss(self, trainer, inputs, labels, logits):
-        self._update(inputs, labels)
+        self._update(inputs, labels, logits)
 
         if not self.active:
             return 0.0
 
         n_per_class = max(1, len(labels) // self.n_classes)
-        replay_inputs, replay_labels = self._sample(n_per_class)
+        replay_inputs, replay_labels, stored_logits = self._sample(n_per_class)
         if replay_inputs is None:
             return 0.0
 
         replay_inputs = {k: v.to(trainer.device) for k, v in replay_inputs.items()}
-        return trainer.model(**replay_inputs, labels=replay_labels.to(trainer.device)).loss
+        replay_labels = replay_labels.to(trainer.device)
+        stored_logits = stored_logits.to(trainer.device)
+
+        current_logits = trainer.model(**replay_inputs).logits
+
+        # MSE against stored logits: don't change what the model used to think
+        mse = F.mse_loss(current_logits, stored_logits)
+        # CE against stored labels: keep predicting the right class
+        ce  = trainer.model.criterion(current_logits, replay_labels)
+
+        return self.alpha * mse + self.beta * ce

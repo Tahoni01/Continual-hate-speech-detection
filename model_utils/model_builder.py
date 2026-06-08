@@ -1,65 +1,58 @@
-# model_builder.py
-import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoConfig
 from transformers.modeling_outputs import SequenceClassifierOutput
 
-class CustomClassifier(nn.Module):
-    def __init__(self, model_name: str, num_labels: int, freeze_backbone=True, unfreeze_last_n_layers=2, dropout_rate= 0.1):
+
+class HateSpeechClassifier(nn.Module):
+
+    def __init__(
+        self,
+        model_name="distilbert/distilroberta-base",
+        num_labels=3,
+        unfreeze_last_n=3,
+        dropout=0.1,
+        class_weights=None,
+    ):
         super().__init__()
 
-        # ---------------------------
-        # Backbone
-        # ---------------------------
-        self.config = AutoConfig.from_pretrained(model_name, num_labels=num_labels)
+        self.config   = AutoConfig.from_pretrained(model_name, num_labels=num_labels)
         self.backbone = AutoModel.from_pretrained(model_name, config=self.config)
 
-        # Freeze backbone se richiesto
-        if freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False     
+        # freeze the whole backbone first, then selectively unfreeze the top layers —
+        # lower layers capture general language patterns we want to keep intact
+        for p in self.backbone.parameters():
+            p.requires_grad = False
 
-        if unfreeze_last_n_layers > 0:
-            if hasattr(self.backbone, "transformer"):
-                layers = list(self.backbone.transformer.layer)
+        layers = list(self.backbone.encoder.layer)
+        for layer in layers[-unfreeze_last_n:]:
+            for p in layer.parameters():
+                p.requires_grad = True
 
-            elif hasattr(self.backbone, "encoder"):
-                layers = list(self.backbone.encoder.layer)
-
-            else:
-                print("Warning: nessun layer sbloccato")
-                layers = []
-        
-            for layer in layers[-unfreeze_last_n_layers:]:
-                for param in layer.parameters():
-                    param.requires_grad = True
-
-        hidden_size = self.config.hidden_size
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+        hidden = self.config.hidden_size
+        self.head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size // 2, num_labels)
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 2, num_labels),
         )
 
-        for layer in self.classifier:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
+        for m in self.head:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+
+    def parameter_groups(self, lr_backbone=2e-5, lr_head=1e-4):
+        # the head trains from scratch so it needs a higher LR than the backbone
+        return [
+            {"params": [p for p in self.backbone.parameters() if p.requires_grad],
+             "lr": lr_backbone},
+            {"params": self.head.parameters(), "lr": lr_head},
+        ]
 
     def forward(self, input_ids, attention_mask=None, labels=None):
-        # Backbone
-        outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        cls_token = outputs.last_hidden_state[:, 0]
-
-        # Head
-        logits = self.classifier(cls_token)
-
-        # Loss
-        loss = None
-        if labels is not None:
-            loss_fn = nn.CrossEntropyLoss()
-            loss = loss_fn(logits, labels)
-
+        out    = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
+        logits = self.head(out.last_hidden_state[:, 0])  # CLS token
+        loss   = self.criterion(logits, labels) if labels is not None else None
         return SequenceClassifierOutput(loss=loss, logits=logits)
